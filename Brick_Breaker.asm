@@ -2655,6 +2655,18 @@ LoadScore:
     pop bp
     ret 2
 
+ClearHighBuffer:
+    pusha
+    mov di,High
+    mov cx,10
+    mov al,0
+ClearLoop:
+    mov byte[di],al
+    inc di
+    loop ClearLoop
+    popa
+    ret
+
 CompareScores:
     pusha
     
@@ -2710,8 +2722,23 @@ ChangeHigh:
 End_CompareScores:
     popa
     ret
+    
 SaveScore:
     pusha
+    
+    ; Clear both buffers first
+    call ClearHighBuffer
+    
+    ; Clear LoadHigh buffer
+    mov di,LoadHigh
+    mov cx,10
+    mov al,0
+ClearLoadHigh:
+    mov byte[di],al
+    inc di
+    loop ClearLoadHigh
+    
+    ; Convert current score to string
     call ConvertScoretoString
 
     ; Try to open existing file
@@ -2759,10 +2786,8 @@ WriteScore:
     push bx
     call CloseFile
     
-
-popa
-ret
-
+    popa
+    ret
 
 ;=============================
 ;SHOW SAVED SCORE
