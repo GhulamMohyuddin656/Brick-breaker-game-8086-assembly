@@ -26,8 +26,10 @@ PaddleEcol dw 0
 PaddleLength dw 9
 PaddleLengthTemp dw 0
 paddleColor db 0x10
-
-
+BonusTimer dw 0
+TickCount dw 0         ; Used to slow down the 10-second countdown
+BonusText db 'Bonus: ',0
+BonusTimeText db '00', 0 ; To display the seconds
 ;================================================
 ; SCORE ,LIVES AND OTHER VARIABLES
 ;================================================
@@ -684,7 +686,7 @@ mov [ball_new_c],ax
 mov word[dir_x],1
 mov word[dir_y],-1
 push di
-mov ax,0xF000
+mov ax,0x0FDB
 push ax
 call DisplayBall
 pop ax
@@ -744,7 +746,7 @@ add ax,[ball_new_c]
 shl ax,1
 mov di,ax
 push di
-mov ax,0xF000
+mov ax,0x0FDB
 push ax
 call DisplayBall
 pop ax
@@ -953,22 +955,25 @@ ret
 
 
 DisplayBall:
-push bp
-mov bp,sp
-push ax
-push di
-mov ax,0xb800
-mov es,ax
-mov ax,[bp+4]
-mov di,[bp+6]
-mov word[es:di],ax
-pop di
-pop ax
-pop bp
-ret
-
-
-
+    push bp
+    mov bp,sp
+    push ax
+    push di
+    mov ax,0xb800
+    mov es,ax
+    mov ax,[bp+4]      ; Get color/char from stack
+    mov di,[bp+6]      ; Get position
+    
+    cmp ah, 0x00       ; Is it the Black color used for EraseBall?
+    je .skip_block     ; If yes, don't change character (keep it as space)
+    
+    mov al, 111       ; If drawing, force Solid Block character
+.skip_block:
+    mov word[es:di],ax
+    pop di
+    pop ax
+    pop bp
+    ret
 ;====================================================
 ;		DELAY FOR BALL MOVEMENT
 ;====================================================
@@ -1677,46 +1682,53 @@ PaddleLoop:
     push bx
 
 Outer:
-    ;---------------------
-    ; 1. UPDATE PADDLE
-    ;---------------------
-    
-    cmp word[BlockCount],10 ; UPDATE PADDLE LENGHT IF 10 Blocks are Destroyed
-    jne SkipDoubleLength
+    ;--- 1. Power-up Trigger ---
+    cmp word[BlockCount], 10 
+    jne near CheckTimer
     call ERASEPADDLE
-    call SoundGameOver
-    add word[BlockCount],1
-    mov ax,[PaddleLength]
-    mov [PaddleLengthTemp],ax
-    shl ax,1
-    mov [PaddleLength],ax
-    
+    mov word[BlockCount], 11    
+    mov ax, [PaddleLength]
+    mov [PaddleLengthTemp], ax  
+    shl ax, 1                   ; Double the size
+    mov [PaddleLength], ax
+    mov word[BonusTimer], 10    ; 10 Seconds
+    mov word[TickCount], 0
     call IntializePaddle
-    mov word[Intialized],1
-    SkipDoubleLength:
-    
-    cmp word[BlockCount],20  ;After Destroying 9 more blocks Paddle Length will be normal
-    jne SkipUpdateLength
-    call SoundGameOver
-    call ERASEPADDLE
-    mov ax,[PaddleLengthTemp]
-    mov [PaddleLength],ax
-    mov word[BlockCount],0
-    
-    call IntializePaddle
-    mov word[Intialized],1
-    SkipUpdateLength:
-    call PaddleLogic
+    mov word[Intialized], 1     
 
-    ;---------------------
-    ; 2. CHECK IF WAITING FOR START
-    ;---------------------
+CheckTimer:
+    cmp word[BonusTimer], 0
+    jle near SkipTimerLogic
+    
+    inc word[TickCount]
+    cmp word[TickCount], 535
+    jne near DisplayOnly
+    
+    mov word[TickCount], 0
+    dec word[BonusTimer]
+
+DisplayOnly:
+    call ShowBonusTimer         
+
+    cmp word[BonusTimer], 0
+    jne near SkipTimerLogic
+    
+    ; TIMER EXPIRED
+    call ERASEPADDLE
+    mov ax, [PaddleLengthTemp]
+    mov [PaddleLength], ax      
+    mov word[BlockCount], 0
+    call ClearBonusDisplay
+    call IntializePaddle
+    mov word[Intialized],1
+    jmp near Outer
+SkipTimerLogic:
+    call PaddleLogic            
+
     cmp word[Intialized], 1
-    jne NormalGameplay
+    jne near NormalGameplay
 
-    ;---------------------
-    ; WAITING FOR ENTER - DON'T MOVE BALL
-    ;---------------------
+    ; ... (Existing text display for Text1) ...
     call UpdateLives
     mov bx, Text1
     push bx
@@ -1727,75 +1739,55 @@ Outer:
     call DisplayText
 
 wait_for_enter:
-    ; Small delay to prevent CPU spinning
-    push cx
-    mov cx, 1000
-    .wait_delay:
-        loop .wait_delay
-    pop cx
-
-    ; Check for key press (non-blocking)
     mov ah, 01h
     int 16h
-    jz wait_for_enter     ; No key, keep waiting
-
-    ; Key available, read it
+    jz near wait_for_enter
     mov ah, 00h
     int 16h
-
-    cmp al, 13            ; Enter key?
-    jne wait_for_enter 
-    call SoundKey
-    cmp word[GAMEOVER],1
-    je near end2
-    cmp word[Won],1
-    je near end2
-    ; Enter pressed!
+    cmp al, 13            
+    jne near wait_for_enter 
+    
+    cmp word[GAMEOVER], 1
+    je near end2          ; Return to Menu
+    cmp word[Won], 1
+    je near end2          ; Return to Menu
+    
     call EraseText
     mov word[Intialized], 0
-    jmp Outer
+    jmp near Outer
 
 NormalGameplay:
-    ;---------------------
-    ; 3. MOVE BALL (if it's time)
-    ;---------------------
     call DelaySmall
-    
-    cmp word[lives],0
-    jne CheckWin
-    mov word[GAMEOVER],1
+    cmp word[lives], 0
+    jne near CheckWin
+    mov word[GAMEOVER], 1
     call SoundGameOver
-    mov bx,Text2
+    mov bx, Text2
     push bx
-    mov bx,[Text2Col]
+    mov bx, [Text2Col]
     push bx
-    mov bx,[Text2Row]
-    push bx
-    
-    call DisplayText
-    jmp pause_game
-    
-    CheckWin:
-    cmp word[Won],1
-    jne TakeInput
-    call SoundGameOver
-    mov bx,text3
-    push bx
-    mov bx,[text3col]
-    push bx
-    mov bx,[text3row]
+    mov bx, [Text2Row]
     push bx
     call DisplayText
-    jmp pause_game
-    ;---------------------
-    ; 4. NON-BLOCKING KEY CHECK
-    ;---------------------
-    TakeInput:
+    jmp near pause_game
+    
+CheckWin:
+    cmp word[Won], 1
+    jne near TakeInput
+    call SoundGameOver
+    mov bx, text3
+    push bx
+    mov bx, [text3col]
+    push bx
+    mov bx, [text3row]
+    push bx
+    call DisplayText
+    jmp near pause_game
+
+TakeInput:
     mov ah, 01h
     int 16h
-    jz ContinueLoop
-
-    ; Key available
+    jz near ContinueLoop
     mov ah, 00h
     int 16h
 
@@ -1803,49 +1795,35 @@ KeyHandler:
     push ax
     call ERASEPADDLE
     pop ax
-
     cmp ah, 0x4B
-    je left
-
+    je near move_left
     cmp ah, 0x4D
-    je right
-
+    je near move_right
     cmp al, 'e'
-    je end2
-
-    cmp al, 'E'
-    je end2
-
+    je near end2
     cmp al, 'P'
-    je pause_game
-
+    je near pause_game
     cmp al, 'p'
-    je pause_game
+    je near pause_game
+    jmp near ContinueLoop
 
-    jmp ContinueLoop
-
-left:
+move_left:
     call MOVLEFT
     call SoundMove
-    jmp Outer
-
-right:
+    jmp near Outer
+move_right:
     call MOVRIGHT
     call SoundMove
-    jmp Outer
-
+    jmp near Outer
 pause_game:
     mov word[Intialized], 1
-    jmp Outer
-
+    jmp near Outer
 end2:
     pop bx
     pop ax
     ret
-
 ContinueLoop:
-    jmp Outer
-
+    jmp near Outer
 
 ;=====================================
 ;           LIVES
@@ -1995,9 +1973,62 @@ pop ax
 ret
 
 
+ShowBonusTimer:
+    pusha
+    push es
+    mov ax, 0xb800
+    mov es, ax
+    
+    ; Calculate offset for Row 0, Column 65
+    ; Formula: (Row * 160) + (Col * 2) -> (0 * 160) + (65 * 2) = 130
+    mov di, 130 
+    
+    mov si, BonusText
+    mov ah, 0x0E ; Yellow text on Black background
+    
+.print_label:
+    lodsb
+    cmp al, 0
+    je .print_val
+    mov [es:di], ax
+    add di, 2
+    jmp .print_label
 
+.print_val:
+    mov ax, [BonusTimer]
+    mov bl, 10
+    div bl       ; AL = Tens, AH = Units
+    
+    ; Print Tens
+    add al, 0x30
+    mov byte [es:di], al
+    mov byte [es:di+1], 0x0E
+    add di, 2
+    
+    ; Print Units
+    add ah, 0x30
+    mov byte [es:di], ah
+    mov byte [es:di+1], 0x0E
+    
+    pop es
+    popa
+    ret
 
-
+ClearBonusDisplay:
+    pusha
+    push es
+    mov ax, 0xb800
+    mov es, ax
+    mov di, 130
+    mov ax, 0x0720 ; Space character, light grey on black
+    mov cx, 12
+.clr_loop:
+    mov [es:di], ax
+    add di, 2
+    loop .clr_loop
+    pop es
+    popa
+    ret
 ;==========================================================================
 
 ;   ██          ██ █████ █████ ██     █      ██          ██ 
@@ -2506,7 +2537,8 @@ mov word[PaddleLength],9
 mov word[lives],3
 mov word[GAMEOVER],0
 mov word[score],0
-mov word[Won], 0 
+mov word[Won], 0
+mov word[BlockCount],0 
 call clr
 call Border
 
@@ -2535,9 +2567,18 @@ ret
 ;=============================
 
 
-
 ConvertScoretoString:
     pusha
+    
+    ; Clear High buffer first
+    mov di,High
+    mov cx,10
+    xor al,al
+.clearHigh:
+    mov byte[di],al
+    inc di
+    loop .clearHigh
+    
     mov ax,[score]
     mov bx,10
     xor dx,dx
@@ -2552,16 +2593,16 @@ Multiply_Loop:
     jne Multiply_Loop
     
     mov [StringSize],cx
-    mov bx,High
+    mov di,High
     
 StoreScore:
     pop dx
     add dl,'0'
-    mov byte[bx],dl
-    inc bx
+    mov byte[di],dl
+    inc di
     loop StoreScore
     
-    mov byte[bx],0
+    mov byte[di],0
     popa
     ret
 
@@ -2595,7 +2636,7 @@ WriteFile:
     mov ah,40h
     mov bx,[FileHandle]
     mov dx,[bp+4]
-    mov cx,9
+    mov cx,[StringSize]     ; Write actual string size, not fixed 9
     int 21h
     
     popa
@@ -2615,7 +2656,6 @@ CloseFile:
     pop bp
     ret 2
 
-
 TryOpenFile:
     push bp
     mov bp,sp
@@ -2625,9 +2665,8 @@ TryOpenFile:
     mov al,2
     mov dx,[bp+4]
     int 21h
-    jc FileDoesNotExist ; If carry set, file doesn't exist
+    jc FileDoesNotExist
     
-    ; File exists
     mov [FileHandle],ax
     mov byte[FileExists],1
     jmp OpenDone
@@ -2645,9 +2684,18 @@ LoadScore:
     mov bp,sp
     pusha
     
+    ; Clear LoadHigh buffer first
+    mov di,LoadHigh
+    mov cx,10
+    xor al,al
+.clearLoad:
+    mov byte[di],al
+    inc di
+    loop .clearLoad
+    
     mov ah,3Fh
     mov bx,[bp+4]
-    mov cx,9
+    mov cx,10           ; Try to read up to 10 bytes
     mov dx,LoadHigh
     int 21h
     
@@ -2655,88 +2703,85 @@ LoadScore:
     pop bp
     ret 2
 
-ClearHighBuffer:
-    pusha
-    mov di,High
-    mov cx,10
-    mov al,0
-ClearLoop:
-    mov byte[di],al
-    inc di
-    loop ClearLoop
-    popa
-    ret
-
 CompareScores:
+    push bp
+    mov bp,sp
+    sub sp,2            ; Local variable for loaded size
     pusha
     
+    ; Count loaded score size
     mov si,LoadHigh
-    mov cx,0
+    xor cx,cx
     
 CheckHighScoreSize:
-    lodsb
+    mov al,[si]
     cmp al,0
     je End_CheckHighScoreSize
-    cmp al,'0'          ; Validate it's a digit
+    cmp al,'0'
     jb End_CheckHighScoreSize
     cmp al,'9'
     ja End_CheckHighScoreSize
     inc cx
+    inc si
     jmp CheckHighScoreSize
     
 End_CheckHighScoreSize:
-    ; If loaded score is empty, current score is the new high score
+    mov [bp-2],cx       ; Store loaded size on stack
+    
+    ; If loaded score is empty, keep new score
     cmp cx,0
     je End_CompareScores
     
     ; Compare sizes (more digits = higher score)
-    cmp cx,[StringSize]
-    jl End_CompareScores    ; Loaded < New (new has more digits, keep new)
-    jg ChangeHigh           ; Loaded > New (loaded has more digits, keep loaded)
+    mov bx,[StringSize] ; BX = new score length
+    cmp bx,cx
+    jg End_CompareScores    ; New has more digits (new > loaded), keep new
+    jl KeepLoaded           ; Loaded has more digits (loaded > new), keep loaded
     
-    ; Same size, compare digit by digit
-Continue_CompareScores:
-    mov si,LoadHigh
-    mov di,High
-    mov cx,[StringSize]
+    ; Same number of digits, compare character by character
+    mov si,LoadHigh     ; SI = old high score
+    mov di,High         ; DI = new score
+    mov cx,bx           ; CX = number of digits to compare
     
 CompareLoop:
-    lodsb               ; Load byte from LoadHigh (old high score)
-    mov bl,al
-    mov al,[di]         ; Load byte from High (new score)
+    mov al,[si]         ; AL = digit from old high score
+    mov bl,[di]         ; BL = digit from new score
+    
+    ; Compare: if new > old, keep new; if old > new, keep old
+    cmp bl,al
+    ja End_CompareScores ; BL > AL means new score > old score, keep new
+    jb KeepLoaded        ; BL < AL means new score < old score, keep old
+    
+    ; Equal, check next digit
+    inc si
     inc di
-    cmp al,bl
-    jb ChangeHigh       ; New < Loaded (keep loaded as high score)
-    ja End_CompareScores ; New > Loaded (keep new as high score)
-    loop CompareLoop
-    ; If we reach here, scores are equal - keep either one (we'll keep new)
+    dec cx
+    jnz CompareLoop
+    
+    ; All digits equal, keep new score
     jmp End_CompareScores
     
-ChangeHigh:
-    ; Replace new score with loaded high score
-    mov cx,10
+KeepLoaded:
+    ; Old high score is better, copy it to High buffer
+    push ds
+    pop es
     mov si,LoadHigh
     mov di,High
+    mov cx,10
     rep movsb
+    
+    ; Update StringSize to match the loaded high score size
+    mov cx,[bp-2]
+    mov [StringSize],cx
     
 End_CompareScores:
     popa
+    mov sp,bp
+    pop bp
     ret
-    
+
 SaveScore:
     pusha
-    
-    ; Clear both buffers first
-    call ClearHighBuffer
-    
-    ; Clear LoadHigh buffer
-    mov di,LoadHigh
-    mov cx,10
-    mov al,0
-ClearLoadHigh:
-    mov byte[di],al
-    inc di
-    loop ClearLoadHigh
     
     ; Convert current score to string
     call ConvertScoretoString
@@ -2762,12 +2807,12 @@ FileFound:
     push bx
     call LoadScore
     
-    ; Close file (we'll reopen for writing if needed)
+    ; Close file
     mov bx,[FileHandle]
     push bx
     call CloseFile
     
-    ; Compare scores
+    ; Compare scores (updates High and StringSize if loaded is better)
     call CompareScores
     
     ; Reopen file for writing
@@ -2776,7 +2821,7 @@ FileFound:
     call TryOpenFile
     
 WriteScore:
-    ; Write high score
+    ; Write high score (uses correct StringSize)
     mov bx,High
     push bx
     call WriteFile
@@ -2788,6 +2833,7 @@ WriteScore:
     
     popa
     ret
+
 
 ;=============================
 ;SHOW SAVED SCORE
